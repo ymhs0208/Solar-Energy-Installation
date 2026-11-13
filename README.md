@@ -37,26 +37,41 @@ npm run preview
 | `/live/fit` | 經濟部 115 年 1 月 2 日躉購費率公告 PDF | 同上。程式從 PDF 文字讀屋頂型級距 |
 | `/live/overpass` | `https://overpass.openstreetmap.fr/api/interpreter` | 帶瀏覽器 Origin 會被拒（403，僅白名單）。代理不帶 Origin，查建物輪廓與 `height` |
 
-代理只允許上表這些官方網址，不是開放代理。本機 `npm run dev` / `npm run preview` 由 Vite 中介層轉送；Cloudflare Pages 由 `functions/live/[[path]].ts` 做同一件事。`functions/report.ts` 與 `functions/epc.ts` 把這兩個前端路由回傳 `index.html`。
+代理只允許上表這些官方網址，不是開放代理。本機 `npm run dev` / `npm run preview` 由 Vite 中介層轉送；Cloudflare Worker 由 `worker/index.ts` 做同一件事。`/report` 與 `/epc` 沒有實體檔案，Static Assets 以單頁應用回傳 `index.html`。
 
-## 部署到 Cloudflare Pages
+## 部署到 Cloudflare Workers
 
-建置指令是 `npm run build`，輸出目錄是 `dist`。
+部署目標是 Worker 加上 Static Assets。`npm run build` 產出 `dist`，`npx wrangler deploy` 依 `wrangler.toml` 上傳：
 
-### 從儀表板連接 Git
+- Worker 名稱 `solar-energy-installation`，進入點 `worker/index.ts`
+- `[assets]` 目錄 `./dist`，binding `ASSETS`，`not_found_handling = "single-page-application"`
+- `run_worker_first = ["/live/*"]`：這條路徑先跑白名單代理；其餘路徑先找靜態檔，沒有檔案就回 `index.html`（`/`、`/report`、`/epc` 都是這樣）
+
+環境變數不用填。
+
+### Workers Builds（Git 連線）
+
+推上 `main` 後，Workers Builds 會執行建置再部署：
+
+```bash
+npm run build
+npx wrangler deploy
+```
+
+若要重新接一次：
 
 1. 打開 [Cloudflare dashboard](https://dash.cloudflare.com/)。
 2. 左側進入 **Workers & Pages**。
 3. 選 **Create**。
-4. 選 **Pages**，再選 **Connect to Git**。
+4. 選 **Workers**（Workers Builds），再選 **Connect to Git**。
 5. 授權 GitHub 後，選倉庫 `ymhs0208/Solar-Energy-Installation`。
 6. 建置設定：
+   - Project name：`solar-energy-installation`（須與 `wrangler.toml` 的 `name` 相同）
    - Production branch：`main`
-   - Framework preset：**None**（或 Vite，若選 Vite 仍請改下面兩欄）
    - Build command：`npm run build`
-   - Build output directory：`dist`
+   - Deploy command：`npx wrangler deploy`
 7. 環境變數不用填。按 **Save and Deploy**。
-8. 部署完成後打開 Pages 給的 `*.pages.dev` 網址。快篩頁會透過 `/live/*` 向國土測繪中心、經濟部、台電、能源署與 Overpass 取數。
+8. 部署完成後打開 Worker 的 `*.workers.dev` 網址。快篩頁會透過 `/live/*` 向國土測繪中心、經濟部、台電、能源署與 Overpass 取數。
 
 ### 只用指令部署
 
@@ -65,16 +80,17 @@ npm run preview
 ```bash
 npm install
 npm run build
-npx wrangler pages deploy dist
+npx wrangler deploy
 ```
 
-第一次會問要新建或指定 Pages 專案。本機先確認代理：
+本機先確認靜態頁和代理（Wrangler 4.20 以上才支援 `run_worker_first` 的路徑陣列）：
 
 ```bash
-npx wrangler pages dev dist
+npm run build
+npx wrangler dev
 ```
 
-然後對該埠請求 `/live/nlsc?q=桃園市觀音區大同二路11號`，應回傳門牌 XML。
+對該埠請求 `/`、`/report`、`/epc` 應回 `index.html`（200）。`/live/nlsc?q=桃園市觀音區大同二路11號` 應回門牌 XML。
 
 ## 資料怎麼用
 

@@ -9,6 +9,10 @@ const FEEDERS = {
   taichung: 'https://service.taipower.com.tw/data/opendata/apply/file/d077009/TAICHUNG.zip',
 } as const
 
+interface Env {
+  ASSETS: Fetcher
+}
+
 function targetFor(url: URL): { href: string; headers: Record<string, string> } | null {
   const path = url.pathname.replace(/\/$/, '') || '/'
   if (path === '/live/nlsc') {
@@ -37,19 +41,18 @@ function proxyResponse(upstream: Response, href: string): Response {
   return new Response(upstream.body, { status: upstream.status, headers })
 }
 
-export async function onRequest(context: { request: Request }): Promise<Response> {
-  const url = new URL(context.request.url)
+async function live(request: Request, url: URL): Promise<Response> {
   try {
     const path = url.pathname.replace(/\/$/, '') || '/'
     if (path === '/live/overpass') {
       const upstream = await fetch(OVERPASS, {
         method: 'POST',
         headers: {
-          'Content-Type': context.request.headers.get('content-type') || 'application/x-www-form-urlencoded',
+          'Content-Type': request.headers.get('content-type') || 'application/x-www-form-urlencoded',
           Accept: 'application/json',
           'User-Agent': 'SolarX/1.0 (educational)',
         },
-        body: await context.request.arrayBuffer(),
+        body: await request.arrayBuffer(),
       })
       return proxyResponse(upstream, OVERPASS)
     }
@@ -72,3 +75,12 @@ export async function onRequest(context: { request: Request }): Promise<Response
     })
   }
 }
+
+export default {
+  async fetch(request, env): Promise<Response> {
+    const url = new URL(request.url)
+    const path = url.pathname.replace(/\/$/, '') || '/'
+    if (path === '/live' || path.startsWith('/live/')) return live(request, url)
+    return env.ASSETS.fetch(request)
+  },
+} satisfies ExportedHandler<Env>
