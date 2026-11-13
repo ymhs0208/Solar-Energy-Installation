@@ -2,6 +2,9 @@ name = "solar-energy-installation"
 main = "worker/index.ts"
 compatibility_date = "2026-11-13"
 
+[build]
+command = "npm run build"
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"
