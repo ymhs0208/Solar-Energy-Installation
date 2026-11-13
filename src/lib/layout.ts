@@ -1,4 +1,4 @@
-import { fromLocal, pointInRing, toLocal, type LatLng, type Xy } from './geo'
+import { fromLocal, pointInRing, segmentsIntersect, toLocal, type LatLng, type Xy } from './geo'
 
 export type LayoutId = 'south' | 'ew' | 'flat'
 
@@ -61,6 +61,7 @@ export function placePanels(input: {
   latitude: number
   pitch: 'winter' | 'gap'
   maxDrawn?: number
+  exclusions?: LatLng[][]
 }): PanelPlacement {
   const { ring, lengthM, widthM, tiltDeg, azimuthDeg, gapM, latitude, pitch } = input
   const maxDrawn = input.maxDrawn ?? 700
@@ -69,6 +70,12 @@ export function placePanels(input: {
   }
   const origin = ring[0]!
   const local = ring.map(([lat, lng]) => toLocal(lat, lng, origin[0], origin[1]))
+  const excluded = (input.exclusions ?? []).map((ring) => ring.map(([lat, lng]) => toLocal(lat, lng, origin[0], origin[1])))
+  const crosses = (a: Xy[], b: Xy[]) => a.some((p, i) => b.some((q, j) => {
+    const nextA = a[(i + 1) % a.length]!
+    const nextB = b[(j + 1) % b.length]!
+    return segmentsIntersect(p.x, p.y, nextA.x, nextA.y, q.x, q.y, nextB.x, nextB.y)
+  }))
   const azimuth = (azimuthDeg * Math.PI) / 180
   const v = { x: Math.sin(azimuth), y: Math.cos(azimuth) }
   const u = { x: Math.cos(azimuth), y: -Math.sin(azimuth) }
@@ -83,20 +90,23 @@ export function placePanels(input: {
   const depth = lengthM * Math.cos(tilt)
   const pitchV = rowPitchM(lengthM, tiltDeg, latitude, gapM, pitch)
   const pitchU = widthM + gapM
+  if (!(pitchV > 0) || !(pitchU > 0)) return { panels: [], count: 0, moduleAreaM2: 0, truncated: false }
   const panels: LatLng[][] = []
   let count = 0
   for (let vv = minV + depth / 2; vv <= maxV; vv += pitchV) {
     for (let uu = minU + widthM / 2; uu <= maxU; uu += pitchU) {
       const center = fromUv(uu, vv)
       if (!pointInRing(center.x, center.y, local)) continue
-      count += 1
-      if (panels.length < maxDrawn) {
-        const corners = [
+      const corners = [
           fromUv(uu - widthM / 2, vv - depth / 2),
           fromUv(uu + widthM / 2, vv - depth / 2),
           fromUv(uu + widthM / 2, vv + depth / 2),
           fromUv(uu - widthM / 2, vv + depth / 2),
-        ]
+      ]
+      if (!corners.every((p) => pointInRing(p.x, p.y, local)) || crosses(corners, local)) continue
+      if (excluded.some((zone) => corners.some((p) => pointInRing(p.x, p.y, zone)) || zone.some((p) => pointInRing(p.x, p.y, corners)) || crosses(corners, zone))) continue
+      count += 1
+      if (panels.length < maxDrawn) {
         panels.push(corners.map((point) => fromLocal(point, origin[0], origin[1])))
       }
     }

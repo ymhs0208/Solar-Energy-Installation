@@ -3,7 +3,7 @@ import { ageYears, parseRocDate } from './dates'
 import { nearestFeeder } from './feeders'
 import { lookupFit, parseRoofFitTable } from './fit'
 import { fullSaleRevenue, parseWindows, paybackYears, selfUseBenefit, summerFraction, weightedEnergyRate } from './finance'
-import { gridGate, legalGate, structuralGate } from './gates'
+import { gridGate, legalGate, structuralGate, surveyRecommendation } from './gates'
 import { placePanels, rowPitchM, winterNoonAltitudeDeg } from './layout'
 import { ringAreaM2, type LatLng } from './geo'
 import { shadeFractionAt } from './shading'
@@ -90,6 +90,15 @@ describe('gates', () => {
 })
 
 describe('solar model', () => {
+  it('requests missing roof observations before recommending a site visit', () => {
+    const unknown = structuralGate({ ageYears: null, roofType: 'rc', leakOrRust: null, seismicRetrofit: false, rooftopAddOn: false })
+    expect(unknown.risk).toBeNull()
+    expect(unknown.missing).toContain('請向廠方確認建物完工年份。')
+    expect(surveyRecommendation([unknown], unknown.missing).status).toBe('先補資料')
+    expect(surveyRecommendation([legalGate(120, 100), unknown], unknown.missing).status).toBe('建議暫緩')
+    expect(surveyRecommendation([legalGate(100, 100)], []).status).toBe('建議優先現勘')
+  })
+
   it('matches horizontal irradiance when the array is flat and losses are off', () => {
     const result = monthlyGeneration(25, 121, climate, { tiltDeg: 0, azimuthsDeg: [180] }, 10, 0.2, {
       albedo: null,

@@ -1,21 +1,10 @@
-export type District = 'guanyin' | 'dali'
-
 export type FactoryRecord = {
   id: string
   name: string
   address: string
-  village: string
-  district: District
-  org: string
-  establishedRaw: string
-  established: string | null
-  registeredRaw: string
+  county: string
   registered: string | null
-  industry: string
-  products: string
-  lat: number | null
-  lng: number | null
-  geocodeLabel: string | null
+  searchText: string
 }
 
 export type Climate = {

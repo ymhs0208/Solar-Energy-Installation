@@ -58,7 +58,7 @@ export type Generation = {
 
 /** 2026 is not a leap year; the hourly shape uses the 15th, then scales to the NASA daily total. */
 export function taipeiWallTime(year: number, monthIndex: number, day: number, hour: number): Date {
-  return new Date(Date.UTC(year, monthIndex, day, hour - 8, 0, 0))
+  return new Date(Date.UTC(year, monthIndex, day, 0, Math.round(hour * 60) - 480, 0))
 }
 
 export function sunAt(lat: number, lng: number, isoDate: string, hour: number) {

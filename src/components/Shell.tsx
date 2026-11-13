@@ -14,7 +14,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <span className="block text-lg font-bold tracking-tight">SolarX AI</span>
             <span className="block text-xs text-stone-600">工廠屋頂太陽能快篩</span>
           </NavLink>
-          <nav className="flex gap-1">
+          <nav aria-label="主導覽" className="flex gap-1">
             <NavLink to="/" end className={({ isActive }) => (isActive ? active : idle)}>
               快篩
             </NavLink>
@@ -22,7 +22,7 @@ export function Shell({ children }: { children: ReactNode }) {
               報告
             </NavLink>
             <NavLink to="/epc" className={({ isActive }) => (isActive ? active : idle)}>
-              案源
+              案場
             </NavLink>
           </nav>
         </div>

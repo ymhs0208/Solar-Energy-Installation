@@ -1,11 +1,38 @@
 import { featureCollection, polygon } from '@turf/helpers'
 import { area } from '@turf/area'
 import { union } from '@turf/union'
+import { difference } from '@turf/difference'
 
 export const METERS_PER_DEG_LAT = 111_320
 
 export type Xy = { x: number; y: number }
 export type LatLng = [number, number]
+
+export function isSimpleRing(ring: LatLng[]): boolean {
+  if (ring.length < 3 || ringAreaM2(ring) < 0.1) return false
+  return !ring.some(([ay, ax], i) => ring.some(([cy, cx], j) => {
+    if (j <= i || j === i + 1 || (i === 0 && j === ring.length - 1)) return false
+    const [by, bx] = ring[(i + 1) % ring.length]!
+    const [dy, dx] = ring[(j + 1) % ring.length]!
+    return segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)
+  }))
+}
+
+export function roofAreaSummary(roofs: LatLng[][], exclusions: LatLng[][]) {
+  const toPolygon = (ring: LatLng[]) => {
+    const coordinates = ring.map(([lat, lng]) => [lng, lat])
+    coordinates.push(coordinates[0]!)
+    return polygon([coordinates])
+  }
+  if (!roofs.length) return { total: 0, usable: 0, excluded: 0 }
+  const features = roofs.map(toPolygon)
+  const merged = features.length === 1 ? features[0]! : union(featureCollection(features))
+  if (!merged) return { total: 0, usable: 0, excluded: 0 }
+  const total = area(merged)
+  const remaining = exclusions.length ? difference(featureCollection([merged, ...exclusions.map(toPolygon)])) : merged
+  const usable = remaining ? area(remaining) : 0
+  return { total, usable, excluded: Math.max(0, total - usable) }
+}
 
 export function metersPerDegLng(lat: number): number {
   return METERS_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180)

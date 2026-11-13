@@ -103,10 +103,12 @@ function unzipText(bytes: Uint8Array, nameIncludes: string): string {
   return new TextDecoder('utf-8').decode(zipEntry(bytes, nameIncludes))
 }
 
-function districtOf(village: string): 'guanyin' | 'dali' | null {
-  if (village.startsWith('桃園市觀音區')) return 'guanyin'
-  if (village.startsWith('臺中市大里區') || village.startsWith('台中市大里區')) return 'dali'
-  return null
+export function factoryCounty(text: string): string {
+  return text.trim().match(/^[\u4e00-\u9fff]{2}[縣市]/)?.[0]?.replace(/^台/, '臺') ?? ''
+}
+
+export function normalizeFactorySearch(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/\s/g, '').replace(/台/g, '臺')
 }
 
 export async function loadFactories(): Promise<{ rows: FactoryRecord[]; stamp: FetchStamp }> {
@@ -114,28 +116,20 @@ export async function loadFactories(): Promise<{ rows: FactoryRecord[]; stamp: F
   const text = unzipText(bytes, '.csv')
   const rows: FactoryRecord[] = []
   for (const row of objects(text)) {
-    const village = row['工廠市鎮鄉村里'] ?? ''
-    const district = districtOf(village)
-    if (!district) continue
+    const id = row['工廠登記編號']
+    if (!id) continue
+    const name = row['工廠名稱'] ?? ''
+    const address = row['工廠地址'] ?? ''
     rows.push({
-      id: row['工廠登記編號'] ?? '',
-      name: row['工廠名稱'] ?? '',
-      address: row['工廠地址'] ?? '',
-      village,
-      district,
-      org: row['工廠組織型態'] ?? '',
-      establishedRaw: row['工廠設立核准日期'] ?? '',
-      established: parseRocDate(row['工廠設立核准日期']),
-      registeredRaw: row['工廠登記核准日期'] ?? '',
+      id,
+      name,
+      address,
+      county: factoryCounty(row['工廠市鎮鄉村里'] ?? '') || factoryCounty(address),
       registered: parseRocDate(row['工廠登記核准日期']),
-      industry: (row['產業類別'] ?? '').trim(),
-      products: (row['主要產品'] ?? '').trim(),
-      lat: null,
-      lng: null,
-      geocodeLabel: null,
+      searchText: normalizeFactorySearch(`${name} ${address} ${id}`),
     })
   }
-  if (rows.length === 0) throw new LiveError('工廠名錄裡沒有觀音或大里的資料')
+  if (rows.length === 0) throw new LiveError('清冊未讀到有效的工廠登記資料')
   return { rows, stamp: { ...stamp, url: FACTORY_URL } }
 }
 

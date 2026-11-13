@@ -44,8 +44,14 @@ export function lookupFit(kwp: number, rows: FitBracket[]): FitBracket | null {
 }
 
 export const CAPEX_CITATION = {
-  name: '內政部國土署新聞稿（引述經濟部及建研所）',
-  url: 'https://www.moi.gov.tw/News_Content.aspx?n=8&s=338947',
-  date: '2026-06-09',
-  text: '太陽光電建置費用每瓩約 3.8 萬餘元。這不是可下載的費率表，請自行輸入要採用的單價。',
+  name: '內政部屋頂光電建置費用參考',
+  url: 'https://www.moi.gov.tw/News_Content.aspx?n=4&s=337788&sms=9009',
+  rate: 38800,
+  text: '預帶每 kWp 新臺幣 38,800 元作為情境參考。取得案場報價後可替換。',
+} as const
+
+export const LOSS_REFERENCE = {
+  rate: 0.113,
+  url: 'https://pvwatts.nrel.gov/downloads/pvwattsv5.pdf',
+  label: '參考 PVWatts 預設 14%，扣除其 3% 遮蔽項後約 11.3%',
 } as const
