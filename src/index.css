@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@import "@fontsource/noto-sans-tc/chinese-traditional-400.css";
+@import "@fontsource/noto-sans-tc/chinese-traditional-700.css";
+
+@theme {
+  --font-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --color-ink: #1c1915;
+  --color-paper: #f3efe6;
+  --color-card: #fffcf7;
+  --color-line: #e4d9c8;
+  --color-copper: #b85a28;
+  --color-pine: #1d6b48;
+  --color-fail: #9d2c2c;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+}
