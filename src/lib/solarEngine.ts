@@ -29,7 +29,7 @@ const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const MONTH_LABELS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const EARTH_R = 6378137;
 
-export const SOLAR_MODEL_VERSION = 3;
+export const SOLAR_MODEL_VERSION = 4;
 
 export const DEFAULT_USER_PARAMS: UserEngineeringParams = {
   factoryName: '',
@@ -598,17 +598,19 @@ export function generateRoofPanelLayoutGeoJson(
 
     if (removed) continue;
 
-    // Rear mounting rack strut under the elevated back edge (-hl)
-    const rackRing = toRing(cx, cy, -hw * 0.85, hw * 0.85, -hl, -hl + Math.min(0.22, hl * 0.35));
-    panel3dFeatures.push({
-      type: 'Feature',
-      properties: {
-        baseM: roofH,
-        topM: roofH + clearance + rise,
-        kind: 'rack',
-      },
-      geometry: { type: 'Polygon', coordinates: [rackRing] },
-    });
+    // Front and rear posts meet the corresponding tilted module slices.
+    const postHalfWidth = 0.05;
+    for (const rowOffset of [-hl * 0.68, hl * 0.68]) {
+      const fraction = (hl - rowOffset) / (2 * hl);
+      const slice = Math.min(sliceCount - 1, Math.floor(fraction * sliceCount));
+      const topM = roofH + clearance + rise * (slice + 0.5) / sliceCount;
+      const rackRing = toRing(cx, cy, -postHalfWidth, postHalfWidth, rowOffset - postHalfWidth, rowOffset + postHalfWidth);
+      panel3dFeatures.push({
+        type: 'Feature',
+        properties: { baseM: roofH, topM, kind: 'rack' },
+        geometry: { type: 'Polygon', coordinates: [rackRing] },
+      });
+    }
 
     // Stepped 3D tilted module slices from back-high (v = -hl, t = 1) to front-low (v = +hl, t = 0)
     for (let s = 0; s < sliceCount; s++) {

@@ -791,16 +791,22 @@ export function buildSolarArrayGroup(opts: {
   });
 
   const vArm = modL * 0.34;
-  const frontLegH = Math.max(0.12, mountY - vArm * sinTilt - roofH - 0.02);
-  const rearLegH = Math.max(0.16, mountY + vArm * sinTilt - roofH - 0.02);
+  const footThickness = 0.035;
+  const footTop = roofH + 0.03 + footThickness;
+  const railDepth = 0.045;
+  const railOffset = 0.035;
+  const frontRailY = mountY - vArm * sinTilt - railOffset;
+  const rearRailY = mountY + vArm * sinTilt - railOffset;
+  const frontLegH = frontRailY - footTop;
+  const rearLegH = rearRailY - footTop;
 
   const postWidth = canopyHeightM >= 1.5 ? 0.10 : 0.055;
   const frontLegGeo = new THREE.BoxGeometry(postWidth, frontLegH, postWidth);
   const rearLegGeo = new THREE.BoxGeometry(postWidth, rearLegH, postWidth);
-  const footGeo = new THREE.BoxGeometry(postWidth * 1.8, 0.035, postWidth * 1.8);
+  const footGeo = new THREE.BoxGeometry(postWidth * 1.8, footThickness, postWidth * 1.8);
   const feet = new THREE.InstancedMesh(footGeo, railMat, count * 2);
   feet.receiveShadow = true;
-  const purlinGeo = new THREE.BoxGeometry(modW + 0.05, 0.045, 0.055);
+  const purlinGeo = new THREE.BoxGeometry(modW + 0.05, railDepth, 0.055);
 
   const frontLegInst = new THREE.InstancedMesh(frontLegGeo, railMat, count);
   const rearLegInst = new THREE.InstancedMesh(rearLegGeo, railMat, count);
@@ -842,13 +848,13 @@ export function buildSolarArrayGroup(opts: {
     const vFootFront = vArm * cosTilt;
     legDummy.position.set(
       p.x + vFootFront * sinYaw,
-      roofH + frontLegH / 2,
+      footTop + frontLegH / 2,
       p.z + vFootFront * cosYaw,
     );
     legDummy.rotation.set(0, yawRad, 0);
     legDummy.updateMatrix();
     frontLegInst.setMatrixAt(i, legDummy.matrix);
-    legDummy.position.y = roofH + 0.037;
+    legDummy.position.y = footTop - footThickness / 2;
     legDummy.updateMatrix();
     feet.setMatrixAt(i * 2, legDummy.matrix);
 
@@ -856,25 +862,23 @@ export function buildSolarArrayGroup(opts: {
     const vFootRear = -vArm * cosTilt;
     legDummy.position.set(
       p.x + vFootRear * sinYaw,
-      roofH + rearLegH / 2,
+      footTop + rearLegH / 2,
       p.z + vFootRear * cosYaw,
     );
     legDummy.updateMatrix();
     rearLegInst.setMatrixAt(i, legDummy.matrix);
-    legDummy.position.y = roofH + 0.037;
+    legDummy.position.y = footTop - footThickness / 2;
     legDummy.updateMatrix();
     feet.setMatrixAt(i * 2 + 1, legDummy.matrix);
 
     // Two continuous horizontal C-channel rails right beneath panel clamping zones
-    const yFrontRail = mountY - vArm * sinTilt - 0.04;
-    purlinDummy.position.set(p.x + vFootFront * sinYaw, yFrontRail, p.z + vFootFront * cosYaw);
+    purlinDummy.position.set(p.x + vFootFront * sinYaw, frontRailY, p.z + vFootFront * cosYaw);
     purlinDummy.rotation.set(0, yawRad, 0);
     purlinDummy.rotateX(tiltRad);
     purlinDummy.updateMatrix();
     purlinInst.setMatrixAt(i * 2, purlinDummy.matrix);
 
-    const yRearRail = mountY + vArm * sinTilt - 0.04;
-    purlinDummy.position.set(p.x + vFootRear * sinYaw, yRearRail, p.z + vFootRear * cosYaw);
+    purlinDummy.position.set(p.x + vFootRear * sinYaw, rearRailY, p.z + vFootRear * cosYaw);
     purlinDummy.updateMatrix();
     purlinInst.setMatrixAt(i * 2 + 1, purlinDummy.matrix);
   }

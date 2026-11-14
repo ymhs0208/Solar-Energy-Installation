@@ -817,7 +817,7 @@ export function Solar3DSimulator({
           {renderedNlscCount > 0 && (
             <>
               <span className="text-slate-600">·</span>
-              <span className="text-emerald-300">鄰棟 · 國土測繪 3D Tiles {renderedNlscCount} 棟</span>
+              <span className="text-emerald-300">鄰棟 · 國土測繪 3D Tiles {renderedNlscCount} 棟（平地基準）</span>
             </>
           )}
         </div>

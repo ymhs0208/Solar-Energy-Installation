@@ -402,7 +402,8 @@ export async function loadNlsc3dTileBuildings(
   for (const b of buildings) {
     const posAttr = b.mesh.geometry.attributes.position;
     for (let i = 0; i < posAttr.count; i++) {
-      posAttr.setZ(i, posAttr.getZ(i) - groundEllipsoidOffsetM);
+      // Both viewers use a flat ground plane. Preserve the mesh shape while seating its base on that plane.
+      posAttr.setZ(i, posAttr.getZ(i) - b.minRawUpM);
     }
     posAttr.needsUpdate = true;
     b.mesh.geometry.computeBoundingSphere();
@@ -415,7 +416,7 @@ export async function loadNlsc3dTileBuildings(
     b.mesh.add(edgeLines);
     b.edgeLines = edgeLines;
 
-    const relTopM = Math.max(0.5, b.maxRawUpM - groundEllipsoidOffsetM);
+    const relTopM = Math.max(0.5, b.maxRawUpM - b.minRawUpM);
     b.feature.heightM = Number(relTopM.toFixed(2));
   }
 
