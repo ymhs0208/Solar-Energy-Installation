@@ -1,8 +1,9 @@
+import { PanelShadeDetails, type PanelInspection } from './PanelShadeDetails';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { getSolarPosition } from '../lib/solarPosition';
+import { getSolarPosition, taiwanSimulationDate } from '../lib/solarPosition';
 import { Building2, ChevronDown, ChevronUp, Compass, Flame, Pause, Play, Sun, Video } from 'lucide-react';
 import type { OsmBuildingFeature, RoofExclusionPolygon, UserEngineeringParams } from '../types/solar';
 import type { ParsedNlscBuildingMesh } from '../lib/nlsc3dTiles';
@@ -31,10 +32,10 @@ interface Solar3DSimulatorProps {
   osmBuildings: OsmBuildingFeature[];
   nlsc3dBuildings?: ParsedNlscBuildingMesh[];
   params: UserEngineeringParams;
-  moduleCount: number;
   annualGenKwh: number;
   annualShadingLossPct: number;
   onSwitchTo2D: () => void;
+  onToggleShadedPanels: () => void;
 }
 
 type CameraPreset = 'iso' | 'top' | 'side' | 'detail' | 'sun';
@@ -86,13 +87,14 @@ export function Solar3DSimulator({
   osmBuildings,
   nlsc3dBuildings = [],
   params,
-  moduleCount,
   annualGenKwh,
   annualShadingLossPct,
   onSwitchTo2D,
+  onToggleShadedPanels,
 }: Solar3DSimulatorProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
+  const [panelInspection, setPanelInspection] = useState<PanelInspection | null>(null);
   const [simMonth, setSimMonth] = useState<number>(6);
   const [simHour, setSimHour] = useState<number>(15);
   const [isPlayingSun, setIsPlayingSun] = useState<boolean>(false);
@@ -135,8 +137,7 @@ export function Solar3DSimulator({
   );
 
   const currentSunInfo = useMemo(() => {
-    const utcHour = simHour - 8;
-    const date = new Date(Date.UTC(2026, simMonth - 1, 15, Math.floor(utcHour), (simHour % 1) * 60, 0));
+    const date = taiwanSimulationDate(2026, simMonth, 15, simHour);
     return sunDirectionVector(date, cLat, cLon);
   }, [simMonth, simHour, cLat, cLon]);
 
@@ -189,7 +190,7 @@ export function Solar3DSimulator({
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.04;
     renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
@@ -355,7 +356,7 @@ export function Solar3DSimulator({
     const layout = generateRoofPanelLayoutGeoJson(
       roofPolygon,
       params,
-      moduleCount,
+      params.maxModuleCountOverride && params.maxModuleCountOverride > 0 ? params.maxModuleCountOverride : undefined,
       exclusionPolygons,
       { buildings: osmBuildings, lat: centerLat, lon: centerLon },
     );
@@ -395,6 +396,8 @@ export function Solar3DSimulator({
       scene.add(obsGroup);
     }
 
+    setPanelInspection(null);
+    let panelMesh: THREE.InstancedMesh | null = null;
     setArrayHeatmapRef.current = null;
     if (selectedPanels.length > 0) {
       const arrayRes = buildSolarArrayGroup({
@@ -404,13 +407,50 @@ export function Solar3DSimulator({
         tiltRad,
         yawRad,
         roofH,
+        canopyHeightM: params.canopyHeightM ?? 3.2,
         maxAniso,
         showShadingHeatmap: showHeatmapRef.current,
         disposables,
       });
+      panelMesh = arrayRes.panelMesh;
       setArrayHeatmapRef.current = arrayRes.setHeatmapMode;
       scene.add(arrayRes.group);
     }
+
+    const removedMarkers = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(modW, 0.03, modL * Math.cos(tiltRad)),
+      new THREE.MeshBasicMaterial({ color: '#fb923c', transparent: true, opacity: 0.55, depthWrite: false }),
+      layout.removedCenters.length,
+    );
+    const markerMatrix = new THREE.Matrix4();
+    for (const [index, panel] of layout.removedCenters.entries()) {
+      markerMatrix.makeRotationY(yawRad);
+      markerMatrix.setPosition(panel.cx, roofH + 0.075, -panel.cy);
+      removedMarkers.setMatrixAt(index, markerMatrix);
+    }
+    if (layout.removedCenters.length > 0) scene.add(removedMarkers);
+    disposables.push(removedMarkers, removedMarkers.geometry, removedMarkers.material as THREE.Material);
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const pointerStart = new THREE.Vector2();
+    const rememberPointer = (event: PointerEvent) => pointerStart.set(event.clientX, event.clientY);
+    const inspectPanel = (event: PointerEvent) => {
+      if (!event.isPrimary || Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 6) return;
+      const bounds = renderer.domElement.getBoundingClientRect();
+      pointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1, 1 - (event.clientY - bounds.top) / bounds.height * 2);
+      raycaster.setFromCamera(pointer, camera);
+      const objects: THREE.Object3D[] = [];
+      if (panelMesh) objects.push(panelMesh);
+      if (layout.removedCenters.length > 0) objects.push(removedMarkers);
+      const hit = raycaster.intersectObjects(objects, false)[0];
+      const removed = hit?.object === removedMarkers;
+      const panel = hit?.instanceId === undefined ? undefined
+        : (removed ? layout.removedCenters : layout.selectedCenters)[hit.instanceId];
+      setPanelInspection(panel ? { ...panel, removed } : null);
+    };
+    renderer.domElement.addEventListener('pointerdown', rememberPointer);
+    renderer.domElement.addEventListener('pointerup', inspectPanel);
 
     // 4. Surrounding Real NLSC 3D Tiles Meshes + Non-Overlapping OSM Height Buildings
     const nlscContext = buildNlscContextGroup({
@@ -434,13 +474,9 @@ export function Solar3DSimulator({
     });
     scene.add(osmGroup);
 
-    // 5. Three-Point Lighting Rig (SunCalc Warm Key + Cool Hemisphere + Opposite Sky Rim Fill)
+    // Direct sunlight and diffuse sky light
     const hemiLight = new THREE.HemisphereLight('#bae6fd', '#64748b', 0.65);
     scene.add(hemiLight);
-
-    const rimFillLight = new THREE.DirectionalLight('#cbd5e1', 0.42);
-    rimFillLight.position.set(-90, 70, -110);
-    scene.add(rimFillLight);
 
     const sunLight = new THREE.DirectionalLight('#fffbeb', 2.25);
     sunLight.castShadow = true;
@@ -451,9 +487,10 @@ export function Solar3DSimulator({
     sunLight.shadow.camera.top = shadowExtent;
     sunLight.shadow.camera.bottom = -shadowExtent;
     sunLight.shadow.camera.near = 10;
-    sunLight.shadow.camera.far = 480;
+    sunLight.shadow.camera.far = Math.max(480, shadowExtent * 3);
     sunLight.shadow.bias = -0.0004;
-    sunLight.shadow.normalBias = 0.025;
+    sunLight.shadow.normalBias = 0.018;
+    sunLight.shadow.radius = 1.5;
     scene.add(sunLight);
     scene.add(sunLight.target);
 
@@ -481,33 +518,32 @@ export function Solar3DSimulator({
     disposables.push(arcMat, arcGeo);
 
     const applySunState = (m: number, h: number) => {
-      const utcH = h - 8;
-      const date = new Date(Date.UTC(2026, m - 1, 15, Math.floor(utcH), (h % 1) * 60, 0));
+      const date = taiwanSimulationDate(2026, m, 15, h);
       const { dir, altDeg } = sunDirectionVector(date, cLat, cLon);
 
-      const lightDist = 190;
+      const lightDist = Math.max(190, shadowExtent * 1.35);
       sunLight.position.copy(dir).multiplyScalar(lightDist);
       sunOrb.position.copy(dir).multiplyScalar(arcRadius);
       sunOrb.visible = altDeg > -2;
 
       if (altDeg <= 0) {
         skyColor.set('#1e293b');
-        sunLight.intensity = 0.05;
+        sunLight.intensity = 0;
+        sunLight.castShadow = false;
         hemiLight.intensity = 0.35;
-        rimFillLight.intensity = 0.25;
       } else if (altDeg < 18) {
         const t = altDeg / 18;
         skyColor.set('#fed7aa').lerp(new THREE.Color('#dbeafe'), t);
         sunLight.color.set('#fb923c').lerp(new THREE.Color('#fffbeb'), t);
-        sunLight.intensity = 1.15 + t * 1.2;
+        sunLight.intensity = t * 2.15;
+        sunLight.castShadow = true;
         hemiLight.intensity = 0.45 + t * 0.25;
-        rimFillLight.intensity = 0.32 + t * 0.12;
       } else {
         skyColor.set('#dbeafe');
         sunLight.color.set('#fffbeb');
-        sunLight.intensity = 2.3;
+        sunLight.intensity = 2.15;
+        sunLight.castShadow = true;
         hemiLight.intensity = 0.72;
-        rimFillLight.intensity = 0.42;
       }
       scene.background = skyColor;
       if (scene.fog instanceof THREE.FogExp2) {
@@ -516,7 +552,7 @@ export function Solar3DSimulator({
 
       const arcPts: THREE.Vector3[] = [];
       for (let hr = 5.5; hr <= 18.5; hr += 0.5) {
-        const dArc = new Date(Date.UTC(2026, m - 1, 15, Math.floor(hr - 8), ((hr - 8) % 1) * 60, 0));
+        const dArc = taiwanSimulationDate(2026, m, 15, hr);
         const sArc = sunDirectionVector(dArc, cLat, cLon);
         if (sArc.altDeg > 0) {
           arcPts.push(sArc.dir.clone().multiplyScalar(arcRadius));
@@ -655,6 +691,8 @@ export function Solar3DSimulator({
       resizeObs.disconnect();
       controls.removeEventListener('change', requestRender);
       controls.dispose();
+      renderer.domElement.removeEventListener('pointerdown', rememberPointer);
+      renderer.domElement.removeEventListener('pointerup', inspectPanel);
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       for (const d of disposables) d.dispose();
@@ -672,6 +710,7 @@ export function Solar3DSimulator({
     cLon,
     cLat,
     params.targetRoofHeightM,
+    params.canopyHeightM,
     params.roofType,
     params.moduleWidthM,
     params.moduleLengthM,
@@ -680,7 +719,9 @@ export function Solar3DSimulator({
     params.setbackM,
     params.walkwayRatioPct,
     params.excludeShadedThresholdPct,
-    moduleCount,
+    params.maxModuleCountOverride,
+    centerLat,
+    centerLon,
   ]);
 
   // Span-proportional smooth camera preset triggers
@@ -700,8 +741,9 @@ export function Solar3DSimulator({
       _vTarget.set(0, roofH * 0.75, 0);
       _vCamPos.set(dist * 1.15, roofH + Math.max(8, dist * 0.2), dist * 0.16);
     } else if (preset === 'detail') {
-      _vTarget.set(0, roofH + 0.5, 0);
-      _vCamPos.set(11, roofH + 5.2, 13);
+      const rackHeight = params.canopyHeightM ?? 3.2;
+      _vTarget.set(0, roofH + rackHeight * 0.55, 0);
+      _vCamPos.set(11, roofH + rackHeight + 4, 13);
     } else {
       _vTarget.set(0, roofH * 0.8, 0);
       const sunPos = currentSunInfo.dir.clone().multiplyScalar(dist * 1.2);
@@ -757,23 +799,25 @@ export function Solar3DSimulator({
       {/* Minimal Top-Left Spec Readout (no backdrop-filter over WebGL) */}
       <div className="absolute top-3 left-3 z-10 bg-slate-950/90 border border-slate-700/80 rounded-lg px-3.5 py-2.5 text-white shadow-lg pointer-events-auto">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span className="font-semibold text-amber-400">3D 光電陣列與複合結構模型</span>
+          <span className="font-semibold text-amber-400">3D 光電配置示意</span>
           <span className="font-mono tabular-nums text-slate-200">
-            模擬模組 {placed3DPanels} 片 · 年發電 {Math.round(annualGenKwh).toLocaleString('zh-TW')} 度
+            點選模組查看遮蔭 · {placed3DPanels} 片 · 年發電 {Math.round(annualGenKwh).toLocaleString('zh-TW')} 度
           </span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-mono tabular-nums text-slate-300">
           <span>
-            屋頂 {params.roofType === 'metal' ? '鐵皮浪板' : params.roofType === 'rc' ? 'RC 混凝土' : '未指定材質'} ({params.targetRoofHeightM}m)
+            目標屋頂（依輪廓與輸入高度建模） {params.roofType === 'metal' ? '鐵皮浪板' : params.roofType === 'rc' ? 'RC 混凝土' : '未指定材質'} ({params.targetRoofHeightM}m)
           </span>
           <span className="text-slate-600">·</span>
           <span>傾角 {params.tiltDeg}° / 方位 {params.azimuthDeg}°</span>
+          <span className="text-slate-600">·</span>
+          <span>棚架設定 {(params.canopyHeightM ?? 3.2).toFixed(1)} m</span>
           <span className="text-slate-600">·</span>
           <span>年遮蔭損失 {annualShadingLossPct.toFixed(1)}%</span>
           {renderedNlscCount > 0 && (
             <>
               <span className="text-slate-600">·</span>
-              <span className="text-emerald-300">周圍 NLSC 3D 建物 {renderedNlscCount} 棟</span>
+              <span className="text-emerald-300">鄰棟 · 國土測繪 3D Tiles {renderedNlscCount} 棟</span>
             </>
           )}
         </div>
@@ -790,9 +834,26 @@ export function Solar3DSimulator({
             </span>
           </div>
         )}
+      <button
+        type="button"
+        onClick={onToggleShadedPanels}
+        aria-pressed={params.excludeShadedThresholdPct != null}
+        className="mt-2 cursor-pointer rounded-md bg-slate-950/90 px-3 py-2 text-xs font-semibold text-orange-200"
+      >
+        {params.excludeShadedThresholdPct != null ? '恢復全排布 · 橘色為剔除板位' : '剔除年遮蔭率 ≥15% 的板位'}
+      </button>
+
       </div>
 
       {/* Collapsible Bottom Control Dock (Zero Viewport Center Occlusion, no backdrop-filter) */}
+      {panelInspection && (
+        <div className="absolute left-3 top-32 z-20 max-w-[calc(100%_-_24px)] rounded-lg border border-slate-700 bg-slate-950/95 p-3 text-white shadow-lg">
+          <PanelShadeDetails panel={panelInspection}>
+            <button type="button" onClick={() => setPanelInspection(null)} className="cursor-pointer underline">關閉</button>
+          </PanelShadeDetails>
+        </div>
+      )}
+
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[min(820px,94vw)] flex flex-col items-center pointer-events-none">
         <button
           type="button"
@@ -916,7 +977,7 @@ export function Solar3DSimulator({
               />
 
               <span className="text-xs font-mono tabular-nums font-bold text-white w-12 text-right shrink-0">
-                {formatHour(simHour)}
+                {simMonth}/15 · {formatHour(simHour)}（臺灣時間）
               </span>
             </div>
           </div>

@@ -1,3 +1,4 @@
+import { MonthlyPerformanceChart } from '../components/MonthlyPerformanceChart';
 import { formatReportDate, ReportLayoutComparison, ReportSource } from '../components/ReportEvidence';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -533,6 +534,9 @@ export function ReportPage() {
           <p className="text-xs text-slate-600 mb-3 leading-relaxed">
             遮蔭規則說明：{result.shading.note}（嚴格僅採用實測 3D Tiles 建物高度與 OSM <code className="font-mono">height</code> 標籤，無高度標籤建物絕不猜測推算。）
           </p>
+          {nasa && result.capacity.moduleCount > 0 && (
+            <div className="mb-3"><MonthlyPerformanceChart rows={result.monthly} /></div>
+          )}
           <div className="overflow-x-auto border border-slate-200 rounded-lg">
             <table className="w-full text-xs">
               <thead className="bg-[#F8FAFC] border-b border-slate-200 text-slate-600">

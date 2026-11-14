@@ -1,3 +1,5 @@
+import { PanelShadeDetails, type PanelInspection } from './PanelShadeDetails';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
@@ -66,7 +68,6 @@ interface RoofMapCanvasProps {
   targetRoofHeightM: number;
   onApplyTargetRoofHeight?: (heightM: number) => void;
   engineeringParams?: UserEngineeringParams;
-  moduleCount?: number;
   onOpen3DSimulator?: () => void;
 }
 
@@ -116,7 +117,6 @@ export function RoofMapCanvas({
   targetRoofHeightM,
   onApplyTargetRoofHeight,
   engineeringParams,
-  moduleCount,
   onOpen3DSimulator,
 }: RoofMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -239,6 +239,7 @@ export function RoofMapCanvas({
       roofPolygon,
       {
         targetRoofHeightM,
+        canopyHeightM: p.canopyHeightM,
         setbackM: p.setbackM,
         walkwayRatioPct: p.walkwayRatioPct,
         moduleWidthM: p.moduleWidthM,
@@ -247,7 +248,7 @@ export function RoofMapCanvas({
         azimuthDeg: p.azimuthDeg,
         excludeShadedThresholdPct: p.excludeShadedThresholdPct,
       },
-      moduleCount,
+      p.maxModuleCountOverride && p.maxModuleCountOverride > 0 ? p.maxModuleCountOverride : undefined,
       exclusionPolygons,
       {
         buildings: effectiveShadingBuildings,
@@ -260,10 +261,13 @@ export function RoofMapCanvas({
     exclusionPolygons,
     engineeringParams,
     targetRoofHeightM,
-    moduleCount,
     effectiveShadingBuildings,
     anchorPoint,
   ]);
+
+  const [panelInspection, setPanelInspection] = useState<{ layout: typeof panelLayout; panel: PanelInspection } | null>(null);
+  const panelLayoutRef = useRef(panelLayout);
+  panelLayoutRef.current = panelLayout;
 
   // Sun sweep animation timer (15-min increments)
   useEffect(() => {
@@ -501,6 +505,7 @@ export function RoofMapCanvas({
         id: 'solar-panels-2d-fill',
         type: 'fill',
         source: 'solar-panels-2d',
+        filter: ['==', ['get', 'removed'], false],
         paint: {
           'fill-color': '#0f2d5e',
           'fill-opacity': 0.9,
@@ -510,10 +515,19 @@ export function RoofMapCanvas({
         id: 'solar-panels-2d-line',
         type: 'line',
         source: 'solar-panels-2d',
+        filter: ['==', ['get', 'removed'], false],
         paint: {
           'line-color': '#93c5fd',
           'line-width': 0.8,
         },
+      });
+
+      map.addLayer({
+        id: 'solar-panels-removed',
+        type: 'line',
+        source: 'solar-panels-2d',
+        filter: ['==', ['get', 'removed'], true],
+        paint: { 'line-color': '#fb923c', 'line-width': 2.5, 'line-dasharray': [2, 1] },
       });
 
       // 3D stepped tilted solar panels & aluminum mounting racks on top of factory roof
@@ -765,8 +779,11 @@ export function RoofMapCanvas({
       });
 
       // Click on OSM building when NOT drawing -> allow applying footprint directly
+      const layersForInspection = ['solar-panels-3d-modules', 'solar-panels-2d-fill', 'solar-panels-removed'];
+      const findPanel = (point: maplibregl.Point) =>
+        map.queryRenderedFeatures(point, { layers: layersForInspection })[0];
       const handleOsmClick = (e: maplibregl.MapLayerMouseEvent) => {
-        if (isDrawingRef.current) return;
+        if (isDrawingRef.current || findPanel(e.point)) return;
         const feat = e.features?.[0];
         if (!feat) return;
         const bid = feat.properties?.id;
@@ -797,6 +814,16 @@ export function RoofMapCanvas({
         if (isDrawingRef.current) {
           setDraftVertices((prev) => [...prev, pt]);
         } else {
+          const feature = findPanel(e.point);
+          if (feature) {
+            const layout = panelLayoutRef.current;
+            const index = Number(feature.properties.panelIndex);
+            const removed = feature.properties.removed === true;
+            const panel = removed ? layout.removedCenters[index - layout.selectedCenters.length] : layout.selectedCenters[index];
+            if (panel) setPanelInspection({ layout, panel: { ...panel, removed } });
+            return;
+          }
+          setPanelInspection(null);
           const features = map.queryRenderedFeatures(e.point, {
             layers: ['taipower-feeders-circle', 'osm-buildings-noheight-fill', 'osm-buildings-3d-extrusion'],
           });
@@ -887,6 +914,7 @@ export function RoofMapCanvas({
     map.setLayoutProperty('solar-panels-3d-modules', 'visibility', showPanels3D ? 'visible' : 'none');
     map.setLayoutProperty('solar-panels-2d-fill', 'visibility', showPanels2D ? 'visible' : 'none');
     map.setLayoutProperty('solar-panels-2d-line', 'visibility', showPanels2D ? 'visible' : 'none');
+    map.setLayoutProperty('solar-panels-removed', 'visibility', showPanels2D || showPanels3D ? 'visible' : 'none');
     map.setLayoutProperty('solar-shadows-roof-3d', 'visibility', show3D ? 'visible' : 'none');
     map.setLayoutProperty('solar-shadows-roof-2d', 'visibility', show3D ? 'none' : 'visible');
 
@@ -1606,12 +1634,20 @@ export function RoofMapCanvas({
         )}
       </div>
 
+      {showPanelsOnMap && panelInspection?.layout === panelLayout && !isDrawing && (
+        <div className="absolute top-24 left-3 z-20 max-w-[calc(100%_-_24px)] rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+          <PanelShadeDetails panel={panelInspection.panel}>
+            <button type="button" onClick={() => setPanelInspection(null)} aria-label="關閉遮蔭明細" className="cursor-pointer"><X size={16} /></button>
+          </PanelShadeDetails>
+        </div>
+      )}
+
       {/* Bottom-Right MapLibre 3D + SunCalc Time Slider Panel */}
       <div className="absolute bottom-7 left-3 right-3 md:left-auto md:right-3 md:w-[min(440px,calc(100%_-_24px))] z-10 bg-white/96 border border-slate-200 rounded-xl px-4 py-3 shadow-lg shadow-slate-900/10">
         <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-950 whitespace-nowrap">
             <Sun className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            <span>SunCalc 3D 遮蔭時間軸</span>
+            <span>SunCalc 遮蔭 · {simDate.month}/{simDate.day}（臺灣時間）</span>
           </div>
           <div className="flex items-center gap-2.5 text-[11px] font-mono tabular-nums text-slate-600 whitespace-nowrap">
             <span className="inline-flex items-center gap-1">

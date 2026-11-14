@@ -49,6 +49,42 @@ export function ReportLayoutComparison({ evidence }: { evidence: EvaluationCase[
               ? `NPV 均採${comparison.financialScenario === 'self' ? '自發自用' : '全額售電'}情境。`
               : '尚缺可用費率，暫無 NPV。'}
           </p>
+          <div className="grid gap-2 sm:grid-cols-2" aria-label="雙方案比較圖">
+            {metrics.map(({ key, label }) => {
+              const values = [comparison.full[key], comparison.filtered[key]];
+              const min = Math.min(0, ...values.map((value) => value ?? 0));
+              const max = Math.max(0, ...values.map((value) => value ?? 0));
+              const range = max - min || 1;
+              const zero = -min / range * 100;
+
+              return (
+                <figure key={key} className="space-y-2 rounded-lg border border-slate-200 p-3 text-xs">
+                  <figcaption className="font-semibold text-slate-900">{label}</figcaption>
+                  {values.map((value, index) => {
+                    const name = index === 0 ? '全排布' : '剔除高遮蔭板';
+                    return (
+                      <div key={name} className="space-y-1">
+                        <div className="flex justify-between gap-2 tabular-nums text-slate-700">
+                          <span>{name}</span><strong>{formatNumber(value)}</strong>
+                        </div>
+                        {value !== null && (
+                          <div className="relative h-2.5 rounded-sm bg-slate-100" aria-hidden="true">
+                            <span className="absolute inset-y-0 rounded-sm" style={{
+                              left: `${(Math.min(value, 0) - min) / range * 100}%`,
+                              width: `${Math.abs(value) / range * 100}%`,
+                              backgroundColor: index === 0 ? '#267157' : '#ad5814',
+                              printColorAdjust: 'exact',
+                            }} />
+                            <span className="absolute inset-y-0 border-l border-slate-500" style={{ left: `${zero}%` }} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </figure>
+              );
+            })}
+          </div>
           <div className="overflow-x-auto rounded-lg border border-slate-200">
             <table className="w-full text-xs tabular-nums">
               <thead className="bg-slate-50">

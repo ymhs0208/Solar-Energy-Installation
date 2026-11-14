@@ -230,6 +230,8 @@ export interface RoofPanelGeoFeature {
     baseM: number;
     topM: number;
     kind: 'panel' | 'rack';
+    panelIndex?: number;
+    removed?: boolean;
     shadePct?: number;
   };
   geometry: {
@@ -348,9 +350,7 @@ export function evaluatePointAnnualShading(
  * Generates physically-placed PV module footprints & stepped 3D tilted extrusions
  * inside the target roof polygon for MapLibre GL rendering, with optional per-panel shading heatmap.
  */
-export function generateRoofPanelLayoutGeoJson(
-  roofPolygon: [number, number][],
-  params: Pick<
+type LayoutParams = Pick<
     UserEngineeringParams,
     | 'targetRoofHeightM'
     | 'setbackM'
@@ -359,39 +359,24 @@ export function generateRoofPanelLayoutGeoJson(
     | 'moduleLengthM'
     | 'tiltDeg'
     | 'azimuthDeg'
-  > & { excludeShadedThresholdPct?: number | null },
-  maxCount?: number,
-  exclusionPolygons: RoofExclusionPolygon[] = [],
+  > & { excludeShadedThresholdPct?: number | null; canopyHeightM?: number };
+
+export interface RoofLayoutCache {
+  inputs: readonly unknown[];
+  prepared?: ReturnType<typeof prepareRoofLayout>;
+  roofShading?: { inputs: readonly unknown[]; result: ShadingSummary };
+}
+
+function prepareRoofLayout(
+  roofPolygon: [number, number][],
+  params: LayoutParams,
+  exclusionPolygons: RoofExclusionPolygon[],
   shadingContext?: {
     buildings: OsmBuildingFeature[];
     lat: number;
     lon: number;
   },
-): {
-  panelCount: number;
-  selectedCenters: Array<{ cx: number; cy: number; rowIndex: number; shadePct: number }>;
-  monthlyShadingLossRatio: number[];
-  candidateCount: number;
-  shadedOver15Count: number;
-  prunedCount: number;
-  maxRiseM: number;
-  panel2dFeatures: RoofPanelGeoFeature[];
-  panel3dFeatures: RoofPanelGeoFeature[];
-} {
-  if (roofPolygon.length < 3) {
-    return {
-      panelCount: 0,
-      selectedCenters: [],
-      monthlyShadingLossRatio: Array(12).fill(0),
-      candidateCount: 0,
-      shadedOver15Count: 0,
-      prunedCount: 0,
-      maxRiseM: 0,
-      panel2dFeatures: [],
-      panel3dFeatures: [],
-    };
-  }
-
+) {
   const [cLon, cLat] = getPolygonCentroid(roofPolygon);
   const roofLocal = roofPolygon.map(([lon, lat]) => projectToLocalMeters(lon, lat, cLon, cLat));
   const exclusionLocals = exclusionPolygons
@@ -494,6 +479,69 @@ export function generateRoofPanelLayoutGeoJson(
     return { cx, cy, rowIndex, shadePct: annualShadePct, monthlyShadeRatios };
   });
 
+  return { scoredCenters, cLon, cLat, roofH, modL, tiltRad, hw, hl, rightX, rightY, facingX, facingY };
+}
+
+export function getPanelHeightAboveRoof(lengthM: number, tiltRad: number, canopyHeightM = 3.2) {
+  const rise = lengthM * Math.sin(tiltRad);
+  const lowEdge = Math.max(0.15, canopyHeightM - rise - 0.025);
+  return { rise, lowEdge, highEdge: lowEdge + rise };
+}
+
+export function generateRoofPanelLayoutGeoJson(
+  roofPolygon: [number, number][],
+  params: LayoutParams,
+  maxCount?: number,
+  exclusionPolygons: RoofExclusionPolygon[] = [],
+  shadingContext?: {
+    buildings: OsmBuildingFeature[];
+    lat: number;
+    lon: number;
+  },
+  includeGeometry = true,
+  cache?: RoofLayoutCache,
+): {
+  panelCount: number;
+  selectedCenters: Array<{ cx: number; cy: number; rowIndex: number; shadePct: number; monthlyShadeRatios: number[] }>;
+  removedCenters: Array<{ cx: number; cy: number; rowIndex: number; shadePct: number; monthlyShadeRatios: number[] }>;
+  monthlyShadingLossRatio: number[];
+  candidateCount: number;
+  shadedOver15Count: number;
+  prunedCount: number;
+  maxRiseM: number;
+  panel2dFeatures: RoofPanelGeoFeature[];
+  panel3dFeatures: RoofPanelGeoFeature[];
+} {
+  if (roofPolygon.length < 3) {
+    return {
+      panelCount: 0,
+      selectedCenters: [],
+      removedCenters: [],
+      monthlyShadingLossRatio: Array(12).fill(0),
+      candidateCount: 0,
+      shadedOver15Count: 0,
+      prunedCount: 0,
+      maxRiseM: 0,
+      panel2dFeatures: [],
+      panel3dFeatures: [],
+    };
+  }
+
+  const inputs = [
+    roofPolygon, exclusionPolygons, shadingContext?.buildings, shadingContext?.lat, shadingContext?.lon,
+    params.targetRoofHeightM, params.setbackM, params.walkwayRatioPct, params.moduleWidthM,
+    params.moduleLengthM, params.tiltDeg, params.azimuthDeg,
+  ];
+  let prepared = cache?.prepared;
+  if (!prepared || !inputs.every((input, index) => Object.is(input, cache?.inputs[index]))) {
+    prepared = prepareRoofLayout(roofPolygon, params, exclusionPolygons, shadingContext);
+    if (cache) {
+      cache.inputs = inputs;
+      cache.prepared = prepared;
+    }
+  }
+  const { scoredCenters, cLon, cLat, roofH, modL, tiltRad, hw, hl, rightX, rightY, facingX, facingY } = prepared;
+
   const shadedOver15Count = scoredCenters.filter((c) => c.shadePct >= 15).length;
   const threshold = params.excludeShadedThresholdPct ?? null;
   const filteredCenters =
@@ -509,8 +557,11 @@ export function generateRoofPanelLayoutGeoJson(
       : selected.reduce((sum, panel) => sum + panel.monthlyShadeRatios[month], 0) / selected.length,
   );
 
-  const clearance = 0.25;
-  const rise = Math.max(0.12, modL * Math.sin(tiltRad));
+  const baselineCount = maxCount === undefined ? scoredCenters.length : limit;
+  const removedCenters = threshold !== null && threshold > 0
+    ? scoredCenters.slice(0, baselineCount).filter((panel) => panel.shadePct >= threshold)
+    : [];
+  const { rise, lowEdge: clearance, highEdge } = getPanelHeightAboveRoof(modL, tiltRad, params.canopyHeightM);
   const sliceCount = selected.length <= 550 ? 3 : selected.length <= 1400 ? 2 : 1;
 
   const toRing = (cx: number, cy: number, u0: number, u1: number, v0: number, v1: number): [number, number][] => {
@@ -528,18 +579,24 @@ export function generateRoofPanelLayoutGeoJson(
   const panel2dFeatures: RoofPanelGeoFeature[] = [];
   const panel3dFeatures: RoofPanelGeoFeature[] = [];
 
-  for (const { cx, cy, shadePct } of selected) {
+  const displayed = includeGeometry ? [...selected, ...removedCenters] : [];
+  for (const [panelIndex, { cx, cy, shadePct }] of displayed.entries()) {
+    const removed = panelIndex >= selected.length;
     const fullRing = toRing(cx, cy, -hw, hw, -hl, hl);
     panel2dFeatures.push({
       type: 'Feature',
       properties: {
         baseM: roofH + clearance,
-        topM: roofH + clearance + rise + 0.06,
+        topM: roofH + highEdge + 0.025,
+        panelIndex,
+        removed,
         kind: 'panel',
         shadePct: Number(shadePct.toFixed(1)),
       },
       geometry: { type: 'Polygon', coordinates: [fullRing] },
     });
+
+    if (removed) continue;
 
     // Rear mounting rack strut under the elevated back edge (-hl)
     const rackRing = toRing(cx, cy, -hw * 0.85, hw * 0.85, -hl, -hl + Math.min(0.22, hl * 0.35));
@@ -564,7 +621,8 @@ export function generateRoofPanelLayoutGeoJson(
         type: 'Feature',
         properties: {
           baseM: roofH + clearance + rise * f0,
-          topM: roofH + clearance + rise * f1 + 0.08,
+          topM: roofH + clearance + rise * f1 + 0.025,
+          panelIndex,
           kind: 'panel',
           shadePct: Number(shadePct.toFixed(1)),
         },
@@ -576,11 +634,12 @@ export function generateRoofPanelLayoutGeoJson(
   return {
     panelCount: selected.length,
     selectedCenters: selected,
+    removedCenters,
     monthlyShadingLossRatio,
     candidateCount: scoredCenters.length,
     shadedOver15Count,
     prunedCount,
-    maxRiseM: clearance + rise + 0.1,
+    maxRiseM: highEdge + 0.025,
     panel2dFeatures,
     panel3dFeatures,
   };
@@ -1952,9 +2011,19 @@ export function evaluateFullSolarCase(
   exclusionPolygons: RoofExclusionPolygon[] = [],
   liveTouOptions: TariffOption[] = [],
   aiVision?: AiRoofVisionResult | null,
+  layoutCache?: RoofLayoutCache,
 ): SolarEvaluationResult {
   const baseCapacity = computeCapacity(roofPolygon, params, exclusionPolygons);
-  const baseShading = computeMonthlyShading(roofPolygon, buildings, lat, lon, params.targetRoofHeightM);
+  const shadingInputs = [roofPolygon, buildings, lat, lon, params.targetRoofHeightM];
+  let roofShading = layoutCache?.roofShading;
+  if (!roofShading || !shadingInputs.every((input, index) => Object.is(input, roofShading?.inputs[index]))) {
+    roofShading = {
+      inputs: shadingInputs,
+      result: computeMonthlyShading(roofPolygon, buildings, lat, lon, params.targetRoofHeightM),
+    };
+    if (layoutCache) layoutCache.roofShading = roofShading;
+  }
+  const baseShading = roofShading.result;
 
   // Per-panel SunCalc heatmap & optional pruning of high-shading panels
   const layoutEval =
@@ -1965,6 +2034,8 @@ export function evaluateFullSolarCase(
           params.maxModuleCountOverride && params.maxModuleCountOverride > 0 ? params.maxModuleCountOverride : undefined,
           exclusionPolygons,
           { buildings, lat, lon },
+          false,
+          layoutCache,
         )
       : null;
 

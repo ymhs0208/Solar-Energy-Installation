@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { OsmBuildingFeature, UserEngineeringParams } from '../types/solar';
 import type { ParsedNlscBuildingMesh } from './nlsc3dTiles';
-import { computePolygonMetrics, pointInPolygon2D, projectToLocalMeters } from './solarEngine';
+import { computePolygonMetrics, getPanelHeightAboveRoof, pointInPolygon2D, projectToLocalMeters } from './solarEngine';
 
 export interface PanelPlacement3D {
   x: number;
@@ -719,10 +719,11 @@ export function buildSolarArrayGroup(opts: {
   tiltRad: number;
   yawRad: number;
   roofH: number;
+  canopyHeightM: number;
   maxAniso: number;
   showShadingHeatmap?: boolean;
   disposables: Array<{ dispose: () => void }>;
-}): { group: THREE.Group; setHeatmapMode: (enabled: boolean) => void } {
+}): { group: THREE.Group; panelMesh: THREE.InstancedMesh | null; setHeatmapMode: (enabled: boolean) => void } {
   const {
     panelPositions,
     modW,
@@ -730,6 +731,7 @@ export function buildSolarArrayGroup(opts: {
     tiltRad,
     yawRad,
     roofH,
+    canopyHeightM,
     maxAniso,
     showShadingHeatmap = false,
     disposables,
@@ -737,11 +739,11 @@ export function buildSolarArrayGroup(opts: {
   const arrayGroup = new THREE.Group();
   const count = panelPositions.length;
   if (count === 0) {
-    return { group: arrayGroup, setHeatmapMode: () => {} };
+    return { group: arrayGroup, panelMesh: null, setHeatmapMode: () => {} };
   }
 
-  const frontClearance = 0.22;
-  const mountY = roofH + frontClearance + (modL / 2) * Math.sin(tiltRad);
+  const { lowEdge, rise } = getPanelHeightAboveRoof(modL, tiltRad, canopyHeightM);
+  const mountY = roofH + lowEdge + rise / 2;
   const cosYaw = Math.cos(yawRad);
   const sinYaw = Math.sin(yawRad);
   const cosTilt = Math.cos(tiltRad);
@@ -752,10 +754,10 @@ export function buildSolarArrayGroup(opts: {
   const glassGeo = new THREE.BoxGeometry(modW - 0.04, 0.022, modL - 0.04);
   const glassMat = new THREE.MeshPhysicalMaterial({
     map: panelTex,
-    roughness: 0.14,
-    metalness: 0.18,
-    clearcoat: 0.92,
-    clearcoatRoughness: 0.08,
+    roughness: 0.26,
+    metalness: 0.05,
+    clearcoat: 0.68,
+    clearcoatRoughness: 0.15,
   });
   const heatmapMat = new THREE.MeshStandardMaterial({
     color: '#ffffff',
@@ -792,8 +794,12 @@ export function buildSolarArrayGroup(opts: {
   const frontLegH = Math.max(0.12, mountY - vArm * sinTilt - roofH - 0.02);
   const rearLegH = Math.max(0.16, mountY + vArm * sinTilt - roofH - 0.02);
 
-  const frontLegGeo = new THREE.BoxGeometry(0.055, frontLegH, 0.055);
-  const rearLegGeo = new THREE.BoxGeometry(0.055, rearLegH, 0.055);
+  const postWidth = canopyHeightM >= 1.5 ? 0.10 : 0.055;
+  const frontLegGeo = new THREE.BoxGeometry(postWidth, frontLegH, postWidth);
+  const rearLegGeo = new THREE.BoxGeometry(postWidth, rearLegH, postWidth);
+  const footGeo = new THREE.BoxGeometry(postWidth * 1.8, 0.035, postWidth * 1.8);
+  const feet = new THREE.InstancedMesh(footGeo, railMat, count * 2);
+  feet.receiveShadow = true;
   const purlinGeo = new THREE.BoxGeometry(modW + 0.05, 0.045, 0.055);
 
   const frontLegInst = new THREE.InstancedMesh(frontLegGeo, railMat, count);
@@ -842,6 +848,9 @@ export function buildSolarArrayGroup(opts: {
     legDummy.rotation.set(0, yawRad, 0);
     legDummy.updateMatrix();
     frontLegInst.setMatrixAt(i, legDummy.matrix);
+    legDummy.position.y = roofH + 0.037;
+    legDummy.updateMatrix();
+    feet.setMatrixAt(i * 2, legDummy.matrix);
 
     // Rear tall support post (-vArm along local Z)
     const vFootRear = -vArm * cosTilt;
@@ -852,6 +861,9 @@ export function buildSolarArrayGroup(opts: {
     );
     legDummy.updateMatrix();
     rearLegInst.setMatrixAt(i, legDummy.matrix);
+    legDummy.position.y = roofH + 0.037;
+    legDummy.updateMatrix();
+    feet.setMatrixAt(i * 2 + 1, legDummy.matrix);
 
     // Two continuous horizontal C-channel rails right beneath panel clamping zones
     const yFrontRail = mountY - vArm * sinTilt - 0.04;
@@ -881,7 +893,9 @@ export function buildSolarArrayGroup(opts: {
   purlinInst.instanceMatrix.needsUpdate = true;
   purlinInst.computeBoundingSphere();
 
-  arrayGroup.add(glassInstanced, frameInstanced, frontLegInst, rearLegInst, purlinInst);
+  feet.instanceMatrix.needsUpdate = true;
+  feet.computeBoundingSphere();
+  arrayGroup.add(glassInstanced, frameInstanced, frontLegInst, rearLegInst, purlinInst, feet);
   disposables.push(
     panelTex,
     glassGeo,
@@ -891,6 +905,7 @@ export function buildSolarArrayGroup(opts: {
     frameMat,
     frontLegGeo,
     rearLegGeo,
+    footGeo,
     purlinGeo,
     railMat,
   );
@@ -911,7 +926,7 @@ export function buildSolarArrayGroup(opts: {
     if (glassInstanced.instanceColor) glassInstanced.instanceColor.needsUpdate = true;
   };
 
-  return { group: arrayGroup, setHeatmapMode };
+  return { group: arrayGroup, panelMesh: glassInstanced, setHeatmapMode };
 }
 
 export interface NlscContextMeshEntry {

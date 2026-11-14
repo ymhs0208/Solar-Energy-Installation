@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { MonthlyPerformanceChart } from '../components/MonthlyPerformanceChart';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -24,8 +25,6 @@ import {
 import { BessSensitivity } from '../components/BessSensitivity';
 import { CashflowComparisonChart } from '../components/CashflowComparisonChart';
 import { InstallVerdictCard, InstallVerdictStrip } from '../components/InstallVerdictCard';
-import { RoofMapCanvas } from '../components/RoofMapCanvas';
-import { Solar3DSimulator } from '../components/Solar3DSimulator';
 import { SourceTag } from '../components/SourceTag';
 import {
   analyzeRoofWithGeminiVision,
@@ -41,10 +40,7 @@ import {
   geocodeTaiwanAddress,
   type SnapshotGeoTransform,
 } from '../lib/liveData';
-import {
-  loadNlsc3dTileBuildings,
-  type ParsedNlscBuildingMesh,
-} from '../lib/nlsc3dTiles';
+import type { ParsedNlscBuildingMesh } from '../lib/nlsc3dTiles';
 import {
   DEFAULT_USER_PARAMS,
   computePolygonMetrics,
@@ -53,6 +49,7 @@ import {
   matchFitTierRate,
   pointInPolygon2D,
   projectToLocalMeters,
+  type RoofLayoutCache,
 } from '../lib/solarEngine';
 import { loadActiveCase, saveActiveCase, upsertCaseToEpcPool } from '../lib/caseStorage';
 import type {
@@ -71,6 +68,9 @@ import type {
   TariffMode,
   UserEngineeringParams,
 } from '../types/solar';
+
+const RoofMapCanvas = lazy(() => import('../components/RoofMapCanvas').then((module) => ({ default: module.RoofMapCanvas })));
+const Solar3DSimulator = lazy(() => import('../components/Solar3DSimulator').then((module) => ({ default: module.Solar3DSimulator })));
 
 const QUICK_INDUSTRIAL_QUERIES = [
   { label: '臺中工業區', query: '臺中市西屯區工業區一路' },
@@ -121,6 +121,7 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
   const [selectedCandidate, setSelectedCandidate] = useState(0);
   const [siteFocusRequest, setSiteFocusRequest] = useState(0);
   const mapPanelRef = useRef<HTMLDivElement>(null);
+  const layoutCache = useRef<RoofLayoutCache>({ inputs: [] });
   const siteRequestRef = useRef(0);
   const nlscRequestRef = useRef(0);
   const visionRequestRef = useRef(0);
@@ -164,7 +165,6 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
 
   const [caseId, setCaseId] = useState<string>(`case-${Date.now()}`);
   const [epcSubmittedMsg, setEpcSubmittedMsg] = useState<string | null>(null);
-  const [hoveredMonth, setHoveredMonth] = useState<number | null>(null);
 
   const loadNlsc3dForSite = async (countyName: string, lat: number, lon: number) => {
     const request = ++nlscRequestRef.current;
@@ -180,6 +180,8 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
       if (request !== nlscRequestRef.current) return;
       setNlsc3dProvenance(nearby.provenance);
       if (nearby.tiles.length > 0) {
+        const { loadNlsc3dTileBuildings } = await import('../lib/nlsc3dTiles');
+        if (request !== nlscRequestRef.current) return;
         const sceneData = await loadNlsc3dTileBuildings(nearby.tiles, lat, lon);
         if (request === nlscRequestRef.current) setNlsc3dBuildings(sceneData.buildings);
       } else {
@@ -523,6 +525,7 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
         exclusionPolygons,
         tariffSchedule?.options ?? [],
         aiVision,
+        layoutCache.current,
       ),
     [
       roofPolygon,
@@ -613,7 +616,7 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
         ? evaluation
         : evaluateFullSolarCase(
             roofPolygon, evalLat, evalLon, { ...params, excludeShadedThresholdPct: threshold },
-            nasa, mergedShadingBuildings, taipower, exclusionPolygons, tariffOptions, aiVision,
+            nasa, mergedShadingBuildings, taipower, exclusionPolygons, tariffOptions, aiVision, layoutCache.current,
           );
     const full = compareAtThreshold(null);
     const filtered = compareAtThreshold(thresholdPct);
@@ -739,10 +742,6 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
       ? matchFitTierRate(evaluation.capacity.pDcKw, fitSchedule.tiers)
       : null;
 
-  const maxMonthlyGen = Math.max(1, ...evaluation.monthly.map((m) => m.genKwh));
-  const hoveredMonthRow =
-    hoveredMonth !== null ? evaluation.monthly.find((m) => m.month === hoveredMonth) ?? null : null;
-
   return (
     <main className="evaluation-page">
       <header className="page-banner evaluation-banner">
@@ -800,63 +799,67 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
           </div>
 
           <div className="flex-1 relative min-h-0">
-            {viewportMode === 'map' ? (
-              <RoofMapCanvas
-                key={caseId}
-                centerLat={targetLat}
-                centerLon={targetLon}
-                hasTargetPoint={hasTargetPoint}
-                siteFocusRequest={siteFocusRequest}
-                siteLabel={locatedPlace || params.address}
-                roofPolygon={roofPolygon}
-                onRoofPolygonChange={handleRoofPolygonChange}
-                exclusionPolygons={exclusionPolygons}
-                onAddExclusionPolygon={handleAddExclusionPolygon}
-                onRemoveExclusionPolygon={(id) =>
-                  setExclusionPolygons((prev) => prev.filter((ex) => ex.id !== id))
-                }
-                onClearExclusionPolygons={() => setExclusionPolygons([])}
-                onMapPointClick={(lat, lon) => {
-                  if (!hasTargetPoint) {
-                    const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-                    setLocatedPlace(label);
-                    loadLiveSiteData(lat, lon, label);
+            <Suspense fallback={<div role="status" className="grid h-full place-items-center bg-slate-100 text-sm text-slate-600">圖台載入中…</div>}>
+              {viewportMode === 'map' ? (
+                <RoofMapCanvas
+                  key={caseId}
+                  centerLat={targetLat}
+                  centerLon={targetLon}
+                  hasTargetPoint={hasTargetPoint}
+                  siteFocusRequest={siteFocusRequest}
+                  siteLabel={locatedPlace || params.address}
+                  roofPolygon={roofPolygon}
+                  onRoofPolygonChange={handleRoofPolygonChange}
+                  exclusionPolygons={exclusionPolygons}
+                  onAddExclusionPolygon={handleAddExclusionPolygon}
+                  onRemoveExclusionPolygon={(id) =>
+                    setExclusionPolygons((prev) => prev.filter((ex) => ex.id !== id))
                   }
-                }}
-                osmBuildings={osmBuildings}
-                nlsc3dBuildings={nlsc3dBuildings}
-                nlsc3dLoading={nlsc3dLoading}
-                shadingBuildings={mergedShadingBuildings}
-                nearbyFeeders={taipower?.nearbyFeeders ?? []}
-                recommendedAltFeeders={
-                  evaluation.gate1Recommendation?.isConstrained
-                    ? evaluation.gate1Recommendation.alternativeFeeders
-                    : []
-                }
-                focusCoordinate={focusCoordinate}
-                targetRoofHeightM={params.targetRoofHeightM}
-                onApplyTargetRoofHeight={(h) =>
-                  setParams((prev) => ({ ...prev, targetRoofHeightM: h }))
-                }
-                engineeringParams={params}
-                moduleCount={evaluation.capacity.moduleCount}
-                onOpen3DSimulator={() => setViewportMode('3d-sim')}
-              />
-            ) : (
-              <Solar3DSimulator
-                centerLat={evalLat}
-                centerLon={evalLon}
-                roofPolygon={roofPolygon}
-                exclusionPolygons={exclusionPolygons}
-                osmBuildings={mergedShadingBuildings}
-                nlsc3dBuildings={nlsc3dBuildings}
-                params={params}
-                moduleCount={evaluation.capacity.moduleCount}
-                annualGenKwh={evaluation.annualGenKwh}
-                annualShadingLossPct={evaluation.shading.annualWeightedShadingLossPct}
-                onSwitchTo2D={() => setViewportMode('map')}
-              />
-            )}
+                  onClearExclusionPolygons={() => setExclusionPolygons([])}
+                  onMapPointClick={(lat, lon) => {
+                    if (!hasTargetPoint) {
+                      const label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+                      setLocatedPlace(label);
+                      loadLiveSiteData(lat, lon, label);
+                    }
+                  }}
+                  osmBuildings={osmBuildings}
+                  nlsc3dBuildings={nlsc3dBuildings}
+                  nlsc3dLoading={nlsc3dLoading}
+                  shadingBuildings={mergedShadingBuildings}
+                  nearbyFeeders={taipower?.nearbyFeeders ?? []}
+                  recommendedAltFeeders={
+                    evaluation.gate1Recommendation?.isConstrained
+                      ? evaluation.gate1Recommendation.alternativeFeeders
+                      : []
+                  }
+                  focusCoordinate={focusCoordinate}
+                  targetRoofHeightM={params.targetRoofHeightM}
+                  onApplyTargetRoofHeight={(h) =>
+                    setParams((prev) => ({ ...prev, targetRoofHeightM: h }))
+                  }
+                  engineeringParams={params}
+                  onOpen3DSimulator={() => setViewportMode('3d-sim')}
+                />
+              ) : (
+                <Solar3DSimulator
+                  centerLat={evalLat}
+                  centerLon={evalLon}
+                  roofPolygon={roofPolygon}
+                  exclusionPolygons={exclusionPolygons}
+                  osmBuildings={mergedShadingBuildings}
+                  nlsc3dBuildings={nlsc3dBuildings}
+                  params={params}
+                  annualGenKwh={evaluation.annualGenKwh}
+                  annualShadingLossPct={evaluation.shading.annualWeightedShadingLossPct}
+                  onSwitchTo2D={() => setViewportMode('map')}
+                  onToggleShadedPanels={() => setParams((previous) => ({
+                    ...previous,
+                    excludeShadedThresholdPct: previous.excludeShadedThresholdPct == null ? 15 : null,
+                  }))}
+                />
+              )}
+            </Suspense>
           </div>
         </div>
 
@@ -2505,63 +2508,7 @@ export function EvaluationPage({ onCaseUpdated }: { onCaseUpdated?: () => void }
                     </div>
                   ) : (
                     <div className="border border-slate-200 rounded-lg p-3.5 bg-white">
-                      <div
-                        className="relative grid grid-cols-12 gap-1.5 items-end h-28 pt-2"
-                        onMouseLeave={() => setHoveredMonth(null)}
-                      >
-                        {/* Subtle baseline reference gridlines */}
-                        <div className="pointer-events-none absolute inset-x-0 top-2 bottom-0 flex flex-col justify-between">
-                          <div className="border-t border-dashed border-slate-100" />
-                          <div className="border-t border-dashed border-slate-100" />
-                          <div className="border-t border-slate-200/80" />
-                        </div>
-                        {evaluation.monthly.map((m) => {
-                          const heightPct = Math.max(4, Math.round((m.genKwh / maxMonthlyGen) * 100));
-                          const isHovered = hoveredMonth === m.month;
-                          return (
-                            <div
-                              key={m.month}
-                              className="relative z-10 flex flex-col items-center h-full justify-end cursor-pointer"
-                              onMouseEnter={() => setHoveredMonth(m.month)}
-                            >
-                              <div
-                                className={`w-full rounded-t transition-colors ${
-                                  isHovered ? 'bg-amber-500' : 'bg-amber-600/90'
-                                }`}
-                                style={{ height: `${heightPct}%` }}
-                                title={`${m.monthLabel}: ${Math.round(m.genKwh).toLocaleString('zh-TW')} kWh · 遮蔭 ${(m.shadingLossRatio * 100).toFixed(1)}%`}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className="grid grid-cols-12 gap-1.5 mt-1.5 text-center text-[10px] font-mono text-slate-500">
-                        {evaluation.monthly.map((m) => (
-                          <div
-                            key={m.month}
-                            className={hoveredMonth === m.month ? 'text-amber-700 font-bold' : ''}
-                          >
-                            {m.month}月
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2.5 pt-2 border-t border-slate-100 text-[11px] font-mono tabular-nums text-slate-600 flex items-center justify-between gap-2">
-                        {hoveredMonthRow ? (
-                          <>
-                            <span className="font-semibold text-slate-900">
-                              {hoveredMonthRow.monthLabel}：{Math.round(hoveredMonthRow.genKwh).toLocaleString('zh-TW')} kWh
-                            </span>
-                            <span>
-                              遮蔭 {(hoveredMonthRow.shadingLossRatio * 100).toFixed(1)}% · 氣溫 {hoveredMonthRow.tAmbC.toFixed(1)}°C
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <span>單位發電：{evaluation.specificYieldKwhPerKwp.toFixed(0)} kWh/kWp/年</span>
-                            <span>有效板數：{evaluation.capacity.moduleCount.toLocaleString('zh-TW')} 片</span>
-                          </>
-                        )}
-                      </div>
+                      <MonthlyPerformanceChart rows={evaluation.monthly} />
 
                       {/* Per-panel shading heatmap pruning action */}
                       {evaluation.shading.panelHeatmap && (
