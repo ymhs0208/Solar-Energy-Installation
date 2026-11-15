@@ -168,6 +168,8 @@ export function RoofMapCanvas({
   onMapPointClickRef.current = onMapPointClick;
   const osmRef = useRef(osmBuildings);
   osmRef.current = osmBuildings;
+  const nlscBuildingsRef = useRef(nlsc3dBuildings);
+  nlscBuildingsRef.current = nlsc3dBuildings;
 
   const effectiveShadingBuildings = useMemo(
     () => (shadingBuildings ?? osmBuildings),
@@ -778,37 +780,65 @@ export function RoofMapCanvas({
           .addTo(map);
       });
 
-      // Click on OSM building when NOT drawing -> allow applying footprint directly
       const layersForInspection = ['solar-panels-3d-modules', 'solar-panels-2d-fill', 'solar-panels-removed'];
       const findPanel = (point: maplibregl.Point) =>
         map.queryRenderedFeatures(point, { layers: layersForInspection })[0];
-      const handleOsmClick = (e: maplibregl.MapLayerMouseEvent) => {
-        if (isDrawingRef.current || findPanel(e.point)) return;
-        const feat = e.features?.[0];
-        if (!feat) return;
-        const bid = feat.properties?.id;
-        const b = osmRef.current.find((item) => item.id === bid);
-        if (!b) return;
-        const popupEl = document.createElement('div');
-        popupEl.innerHTML = `
-          <div style="font-size:12px;line-height:1.5;">
-            <div style="font-weight:700;color:#0f172a;">${b.name || 'OSM 建物輪廓'}</div>
-            <div style="color:#475569;">OSM height 標籤：${b.heightM !== null ? `<strong>${b.heightM} m</strong>` : '無高度標籤'}</div>
-            ${b.levelsTag ? `<div style="color:#64748b;">levels 標籤（不推算高度）：${b.levelsTag}</div>` : ''}
-            <button id="apply-osm-roof-btn" style="margin-top:8px;padding:4px 10px;background:#d97706;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">套用此建物輪廓為評估屋頂</button>
-          </div>
-        `;
-        const popup = new maplibregl.Popup({ offset: 10 }).setLngLat(e.lngLat).setDOMContent(popupEl).addTo(map);
-        popupEl.querySelector('#apply-osm-roof-btn')?.addEventListener('click', () => {
-          onRoofPolygonChangeRef.current(b.coordinates);
-          popup.remove();
-        });
+
+      const buildingRaycaster = new THREE.Raycaster();
+      const inverseProjection = new THREE.Matrix4();
+      const findNlscBuilding = (point: maplibregl.Point) => {
+        const overlay = threeOverlayRef.current;
+        if (!is3DRef.current || !showNlsc3dRef.current || !overlay?.tilesGroup.children.length) return;
+        const canvas = map.getCanvas();
+        const x = (point.x / canvas.clientWidth) * 2 - 1;
+        const y = 1 - (point.y / canvas.clientHeight) * 2;
+        // The custom layer combines the map projection and local-meter transform.
+        inverseProjection.copy(overlay.camera.projectionMatrix).invert();
+        const near = new THREE.Vector3(x, y, -1).applyMatrix4(inverseProjection);
+        const far = new THREE.Vector3(x, y, 1).applyMatrix4(inverseProjection);
+        buildingRaycaster.set(near, far.sub(near).normalize());
+        const hit = buildingRaycaster.intersectObjects(overlay.tilesGroup.children, false)[0];
+        return hit && nlscBuildingsRef.current.find(({ mesh }) => mesh === hit.object)?.feature;
       };
 
-      map.on('click', 'osm-buildings-noheight-fill', handleOsmClick);
-      map.on('click', 'osm-buildings-3d-extrusion', handleOsmClick);
+      const showBuildingInfo = (b: OsmBuildingFeature, lngLat: maplibregl.LngLat, isNlsc: boolean) => {
+        const popupEl = document.createElement('div');
+        popupEl.className = 'space-y-1 text-xs leading-relaxed text-slate-600';
+        const title = document.createElement('div');
+        title.className = 'pr-3 font-semibold text-slate-900';
+        title.textContent = b.name || '建物基本資訊';
+        popupEl.append(title);
 
-      // General map click for vertex drawing or coordinate pick
+        const numberFormat = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 1 });
+        const { areaSqm } = computePolygonMetrics(b.coordinates);
+        const fields = [
+          ['資料來源', isNlsc ? '國土測繪中心 3D Tiles' : 'OpenStreetMap'],
+          ['建物高度', b.heightM === null ? '未提供' : `${numberFormat.format(b.heightM)} m`],
+          ['輪廓面積', areaSqm > 0 ? `約 ${numberFormat.format(areaSqm)} m²` : '未提供'],
+        ];
+        if (!isNlsc) fields.push(['樓層數', b.levelsTag || '未提供']);
+        for (const [label, value] of fields) {
+          const row = document.createElement('div');
+          row.textContent = `${label}：${value}`;
+          popupEl.append(row);
+        }
+
+        const popup = new maplibregl.Popup({ offset: 10 }).setLngLat(lngLat).setDOMContent(popupEl);
+        if (!isNlsc) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'mt-2 cursor-pointer rounded bg-amber-700 px-2.5 py-1 font-semibold text-white hover:bg-amber-800';
+          button.textContent = '套用此建物輪廓為評估屋頂';
+          button.addEventListener('click', () => {
+            onRoofPolygonChangeRef.current(b.coordinates);
+            popup.remove();
+          });
+          popupEl.append(button);
+        }
+        popup.addTo(map);
+      };
+
+      // Give drawing, panel inspection, and feeder markers priority over building inspection.
       map.on('click', (e: maplibregl.MapMouseEvent) => {
         const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
         if (isDrawingRef.current) {
@@ -824,12 +854,21 @@ export function RoofMapCanvas({
             return;
           }
           setPanelInspection(null);
-          const features = map.queryRenderedFeatures(e.point, {
-            layers: ['taipower-feeders-circle', 'osm-buildings-noheight-fill', 'osm-buildings-3d-extrusion'],
-          });
-          if (features.length === 0 && onMapPointClickRef.current) {
-            onMapPointClickRef.current(e.lngLat.lat, e.lngLat.lng);
+          if (map.queryRenderedFeatures(e.point, { layers: ['taipower-feeders-circle'] }).length) return;
+          const nlscBuilding = findNlscBuilding(e.point);
+          if (nlscBuilding) {
+            showBuildingInfo(nlscBuilding, e.lngLat, true);
+            return;
           }
+          const [osmFeature] = map.queryRenderedFeatures(e.point, {
+            layers: ['osm-buildings-noheight-fill', 'osm-buildings-3d-extrusion'],
+          });
+          const osmBuilding = osmRef.current.find(({ id }) => id === osmFeature?.properties?.id);
+          if (osmBuilding) {
+            showBuildingInfo(osmBuilding, e.lngLat, false);
+            return;
+          }
+          onMapPointClickRef.current?.(e.lngLat.lat, e.lngLat.lng);
         }
       });
 
