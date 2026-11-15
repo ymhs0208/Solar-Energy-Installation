@@ -556,7 +556,7 @@ export function ToolPage({ active }: { active: boolean }) {
         <section className="overflow-hidden rounded-lg border border-line bg-card">
           <div className="border-b border-line p-4 sm:px-6">
             <h2 className="text-xl font-bold">圈選屋頂</h2>
-            <p className="mt-1 text-sm text-stone-600">點地圖上的建物輪廓加入屋頂，或手動畫出範圍。</p>
+            <p className="mt-1 text-sm text-stone-600">點擊建物輪廓可查看基本資訊，再加入評估屋頂，也可以手動畫出範圍。</p>
           </div>
           {candidateRoof && !drawing && !roofs.length && mode === '2d' ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-green-50 p-3 text-sm">

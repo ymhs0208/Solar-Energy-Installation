@@ -32,6 +32,7 @@ export function elementsToBuildings(elements: OverpassElement[]): Building[] {
     if (ring.length < 3) continue
     buildings.push({
       id: String(element.id),
+      name: element.tags?.['name:zh-Hant']?.trim() || element.tags?.name?.trim() || undefined,
       ring,
       heightM: parseHeight(element.tags?.height),
       levels: parseLevels(element.tags?.['building:levels']),

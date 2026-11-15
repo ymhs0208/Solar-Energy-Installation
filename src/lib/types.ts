@@ -18,6 +18,7 @@ export type Climate = {
 
 export type Building = {
   id: string
+  name?: string
   ring: [number, number][]
   heightM: number | null
   levels: number | null

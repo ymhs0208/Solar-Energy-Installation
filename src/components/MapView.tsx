@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { LngLatBounds, Map, Marker, NavigationControl, ScaleControl } from 'maplibre-gl'
+import { LngLatBounds, Map, Marker, NavigationControl, Popup, ScaleControl } from 'maplibre-gl'
 import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { Tile3DLayer } from '@deck.gl/geo-layers'
 import { GeoJsonLayer } from '@deck.gl/layers'
 import type { Building, Roof } from '../lib/types'
-import { pointInRing, toLocal } from '../lib/geo'
+import { pointInRing, ringAreaM2, toLocal } from '../lib/geo'
+import { formatM2 } from '../lib/format'
 
 type Ring = [number, number][]
 
@@ -95,6 +96,8 @@ export function MapView({
   const pickRef = useRef(onPickBuilding)
   const issueRef = useRef(onTilesetIssue)
   const roofsRef = useRef(roofs)
+  const buildingsRef = useRef(buildings)
+  const buildingPopupRef = useRef<Popup | null>(null)
   const modelRoofs = useMemo(() => roofs.map((roof) => ({ ...roof, heightM: roof.heightM ?? previewRoofHeight })), [roofs, previewRoofHeight])
   const panelLayers = useMemo(() => {
     const elevated: GeoJSON.Feature<GeoJSON.Polygon>[] = []
@@ -198,26 +201,72 @@ export function MapView({
       map.addLayer({ id: 'draft-vertices', type: 'circle', source: 'vertices', paint: { 'circle-radius': 9, 'circle-color': '#67e8f9', 'circle-stroke-color': '#083344', 'circle-stroke-width': 2 } })
     })
     map.on('click', (event) => {
-      if (modeRef.current === '3d') return
-      if (drawingRef.current) {
+      buildingPopupRef.current?.remove()
+      buildingPopupRef.current = null
+      if (modeRef.current === '2d' && drawingRef.current) {
         addRef.current([event.lngLat.lat, event.lngLat.lng])
         return
       }
-      if (!map.getLayer('buildings-fill')) return
-      const hits = map.queryRenderedFeatures(event.point, { layers: ['buildings-fill'] })
-      const id = hits[0]?.properties?.id
-      if (id) pickRef.current(String(id))
+      const hit = modeRef.current === '3d'
+        ? overlayRef.current?.pickObject({ x: event.point.x, y: event.point.y, layerIds: ['osm-extrude'] })?.object
+        : map.getLayer('buildings-fill')
+          ? map.queryRenderedFeatures(event.point, { layers: ['buildings-fill'] })[0]
+          : undefined
+      const building = buildingsRef.current.find((item) => item.id === hit?.properties?.id)
+      if (!building) return
+
+      const content = document.createElement('div')
+      content.className = 'space-y-1 pr-3 text-xs text-stone-700'
+      const title = document.createElement('strong')
+      title.textContent = building.name || '建物基本資訊'
+      content.append(title)
+      const details = [
+        '資料來源：OpenStreetMap',
+        `屋高：${building.heightM == null ? '無資料' : `${building.heightM} 公尺`}`,
+        `輪廓面積：約 ${formatM2(ringAreaM2(building.ring))}`,
+      ]
+      if (building.levels != null) details.push(`樓層：${building.levels} 層`)
+      for (const detail of details) {
+        const row = document.createElement('div')
+        row.textContent = detail
+        content.append(row)
+      }
+
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'mt-2 rounded bg-stone-800 px-2 py-1 font-semibold text-white hover:bg-stone-700'
+      const isSelected = roofsRef.current.some((roof) => roof.osmId === building.id)
+      button.textContent = isSelected ? '從評估屋頂移除' : '加入評估屋頂'
+      content.append(button)
+
+      const popup = new Popup({ offset: 10, closeOnClick: false })
+        .setLngLat(event.lngLat)
+        .setDOMContent(content)
+        .addTo(map)
+      buildingPopupRef.current = popup
+      button.addEventListener('click', () => {
+        pickRef.current(building.id)
+        popup.remove()
+      })
     })
     mapRef.current = map
     const resizeObserver = new ResizeObserver(() => map.resize())
     resizeObserver.observe(node)
     return () => {
+      buildingPopupRef.current?.remove()
+      buildingPopupRef.current = null
       resizeObserver.disconnect()
       overlayRef.current = null
       map.remove()
       mapRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    buildingsRef.current = buildings
+    buildingPopupRef.current?.remove()
+    buildingPopupRef.current = null
+  }, [buildings, drawing, lat, lng, mode, useOfficialTiles])
 
   useEffect(() => {
     const map = mapRef.current
@@ -340,6 +389,7 @@ export function MapView({
         new GeoJsonLayer({
           id: 'osm-extrude',
           data: knownBuildings,
+          pickable: true,
           extruded: true,
           getElevation: (feature) => Number(feature.properties?.height ?? 0),
           getFillColor: [91, 103, 117, 160],
